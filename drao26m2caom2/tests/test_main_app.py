@@ -66,46 +66,76 @@
 #
 # ***********************************************************************
 #
+import pytest
 
-import tempfile
-
-from caom2pipe import execute_composable as ec
+from drao26m2caom2 import main_app, APPLICATION, COLLECTION
+from caom2.diff import get_differences
 from caom2pipe import manage_composable as mc
-from blank2caom2 import APPLICATION, COLLECTION
+
+from hashlib import md5
+import os
+import sys
+
+from mock import patch
+
+THIS_DIR = os.path.dirname(os.path.realpath(__file__))
+TESTDATA_DIR = os.path.join(THIS_DIR, 'data')
+PLUGIN = os.path.join(os.path.dirname(THIS_DIR), '{}.py'.format(APPLICATION))
 
 
-meta_visitors = []
-data_visitors = []
+# def pytest_generate_tests(metafunc):
+#     if os.path.exists(TESTDATA_DIR):
+#         files = [os.path.join(TESTDATA_DIR, name) for name in
+#                  os.listdir(TESTDATA_DIR) if name.endswith('header')]
+#         metafunc.parametrize('test_name', files)
 
 
-def blank_run():
-    ec.run_by_file(ec.StorageName, APPLICATION, COLLECTION, meta_visitors,
-                   data_visitors)
+@pytest.mark.parametrize('test_name', [])
+def test_main_app(test_name):
+    basename = os.path.basename(test_name)
+    product_id = basename.split('.fits')[0]
+    lineage = _get_lineage(product_id, basename)
+    output_file = '{}.actual.xml'.format(test_name)
+    local = _get_local(test_name)
+    plugin = PLUGIN
+
+    with patch('caom2utils.fits2caom2.CadcDataClient') as data_client_mock:
+        def get_file_info(archive, file_id):
+            if '_prev' in file_id:
+                return {'size': 10290,
+                        'md5sum': md5('-37'.encode()).hexdigest(),
+                        'type': 'image/jpeg'}
+            else:
+                return {'size': 37,
+                        'md5sum': md5('-37'.encode()).hexdigest(),
+                        'type': 'application/fits'}
+        data_client_mock.return_value.get_file_info.side_effect = \
+            get_file_info
+
+        sys.argv = \
+            ('{} --no_validate --local {} '
+             '--plugin {} --module {} --observation {} {} -o {} --lineage {}'.
+             format(APPLICATION, local, plugin, plugin, COLLECTION, product_id,
+                    output_file, lineage)).split()
+        print(sys.argv)
+        main_app()
+        obs_path = test_name.replace('header', 'xml')
+        expected = mc.read_obs_from_file(obs_path)
+        actual = mc.read_obs_from_file(output_file)
+        result = get_differences(expected, actual, 'Observation')
+        if result:
+            msg = 'Differences found in observation {}\n{}'. \
+                format(expected.observation_id, '\n'.join(
+                [r for r in result]))
+            raise AssertionError(msg)
+        # assert False  # cause I want to see logging messages
 
 
-def blank_run_proxy():
-    proxy = '/usr/src/app/cadcproxy.pem'
-    ec.run_by_file(ec.StorageName, APPLICATION, COLLECTION, proxy, 
-	meta_visitors, data_visitors)
+def _get_local(test_name):
+    prev_name = test_name.replace('.fits.header', '_prev.jpg')
+    prev_256_name = test_name.replace('.fits.header', '_prev_256.jpg')
+    return '{} {} {}'.format(test_name, prev_name, prev_256_name)
 
 
-def blank_run_single():
-    import sys
-    config = mc.Config()
-    config.get_executors()
-    config.resource_id = 'ivo://cadc.nrc.ca/sc2repo'
-    if config.features.run_in_airflow:
-        temp = tempfile.NamedTemporaryFile()
-        mc.write_to_file(temp.name, sys.argv[2])
-        config.proxy = temp.name
-    else:
-        config.proxy = sys.argv[2]
-    config.stream = 'raw'
-    if config.features.use_file_names:
-        storage_name = ec.StorageName(file_name=sys.argv[1])
-    else:
-        obs_id = ec.StorageName.remove_extensions(sys.argv[1])
-        storage_name = DraoSTName(obs_id=obs_id)
-    result = ec.run_single(config, storage_name, APPLICATION, meta_visitors,
-                           data_visitors)
-    sys.exit(result)
+def _get_lineage(product_id, basename):
+    return '{}/ad:{}/{}.fits.gz'.format(COLLECTION, product_id, product_id)
