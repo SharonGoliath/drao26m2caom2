@@ -83,7 +83,7 @@ __all__ = ['main_app', 'update', 'Drao26mName', 'COLLECTION', 'APPLICATION']
 
 
 APPLICATION = 'drao26m2caom2'
-COLLECTION = 'DRAO-26m'
+COLLECTION = 'DRAO'
 
 
 class Drao26mName(ec.StorageName):
